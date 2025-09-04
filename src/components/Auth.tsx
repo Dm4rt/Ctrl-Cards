@@ -7,10 +7,14 @@ export default function Auth() {
   const [sent, setSent] = useState(false);
 
   async function signIn() {
-    const { error } = await supabase.auth.signInWithOtp({ email });
-    if (!error) setSent(true);
-    else alert(error.message);
-  }
+  const redirectTo = `${window.location.origin}/`; // or /room if you prefer
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: redirectTo },
+  });
+  if (!error) setSent(true);
+  else alert(error.message);
+}
 
   async function signOut() {
     await supabase.auth.signOut();

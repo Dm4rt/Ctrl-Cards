@@ -28,17 +28,36 @@ export default function RoomHome() {
   }
 
   async function joinRoom() {
-    if (!userId) return alert("Sign in first.");
-    const { data: room, error } = await supabase
-      .from("rooms")
-      .select("*")
-      .eq("code", code.trim().toUpperCase())
-      .single();
-    if (error || !room) return alert("Room not found.");
-    // upsert membership
-    await supabase.from("room_members").upsert({ room_id: room.id, user_id: userId, role: "player" }, { onConflict: "room_id,user_id" });
-    r.push(`/play/${room.code}`);
+  if (!userId) return alert("Sign in first.");
+  const codeClean = code.trim().toUpperCase();
+
+  // 1) Find the room by code
+  const { data: room, error: roomErr } = await supabase
+    .from("rooms")
+    .select("*")
+    .eq("code", codeClean)
+    .single();
+  if (roomErr || !room) {
+    console.error("rooms.select error:", roomErr);
+    return alert("Room not found.");
   }
+
+  // 2) Insert (or update) membership
+  const { error: upsertErr } = await supabase
+    .from("room_members")
+    .upsert(
+      [{ room_id: room.id, user_id: userId, role: "player" }],
+      { onConflict: "room_id,user_id" }
+    );
+  if (upsertErr) {
+    console.error("room_members.upsert error:", upsertErr);
+    return alert(`Join failed: ${upsertErr.message}`);
+  }
+
+  // 3) Navigate
+  r.push(`/play/${room.code}`);
+}
+
 
   return (
     <main className="max-w-xl mx-auto p-6 space-y-6">

@@ -16,6 +16,16 @@ export default function RoomHome() {
   async function createRoom() {
     if (!userId) return alert("Sign in first.");
     const newCode = makeCode();
+
+    // just pick first public deck for now
+  const { data: deck } = await supabase
+    .from("decks")
+    .select("id")
+    .eq("is_public", true)
+    .limit(1)
+    .single();
+  if (!deck) return alert("No deck found.");
+  
     const { data: room, error } = await supabase
       .from("rooms")
       .insert({ code: newCode, host_id: userId })

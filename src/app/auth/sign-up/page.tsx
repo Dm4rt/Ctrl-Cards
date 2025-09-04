@@ -3,6 +3,19 @@ import { useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 
+function getErrMsg(e: unknown) {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  try { return JSON.stringify(e); } catch { return "Unknown error"; }
+}
+function getPgCode(e: unknown): string | undefined {
+  if (typeof e === "object" && e && "code" in e) {
+    const val = (e as { code?: unknown }).code;
+    return typeof val === "string" ? val : undefined;
+  }
+  return undefined;
+}
+
 export default function SignUpPage() {
   const r = useRouter();
   const [email, setEmail] = useState("");
@@ -18,7 +31,6 @@ export default function SignUpPage() {
 
     try {
       setLoading(true);
-      // 1) create auth user
       const { data: sign, error: signErr } = await supabase.auth.signUp({
         email,
         password: pw,
@@ -26,24 +38,25 @@ export default function SignUpPage() {
       });
       if (signErr) throw signErr;
 
-      // If confirm email OFF, we have a session; create profile row
       const uid = sign.user?.id;
       if (uid) {
         const { error: profErr } = await supabase
           .from("profiles")
           .insert({ id: uid, username });
-        if (profErr && (profErr as any).code === "23505") {
-          throw new Error("Username is taken. Pick another.");
+
+        if (profErr) {
+          if (getPgCode(profErr) === "23505") {
+            throw new Error("Username is taken. Pick another.");
+          }
+          throw profErr;
         }
-        if (profErr) throw profErr;
         r.push("/room");
       } else {
-        // If confirm email ON
         alert("Check your email to confirm, then sign in.");
         r.push("/auth/sign-in");
       }
-    } catch (err: any) {
-      alert(err.message ?? String(err));
+    } catch (err: unknown) {
+      alert(getErrMsg(err));
     } finally {
       setLoading(false);
     }

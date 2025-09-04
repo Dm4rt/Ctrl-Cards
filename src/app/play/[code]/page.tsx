@@ -3,20 +3,8 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-type Room = {
-  id: string;
-  code: string;
-  status: string;
-  host_id: string | null;
-  deck_id: string | null;
-};
-
-type Member = {
-  id: string;
-  user_id: string;
-  role: "host" | "player" | "spectator";
-  score: number;
-};
+type Room = { id: string; code: string; status: string; host_id: string | null; deck_id: string | null; };
+type Member = { id: string; user_id: string; role: "host" | "player" | "spectator"; score: number; };
 
 export default function PlayPage({ params }: { params: { code: string } }) {
   const code = params.code.toUpperCase();
@@ -26,27 +14,28 @@ export default function PlayPage({ params }: { params: { code: string } }) {
   const [deckName, setDeckName] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
-  // helper to load members for current room
   async function loadMembers(roomId: string) {
-    const { data: m } = await supabase
+    const { data, error } = await supabase
       .from("room_members")
       .select("id,user_id,role,score")
       .eq("room_id", roomId);
-    setMembers((m ?? []) as Member[]);
+    if (error) console.error("loadMembers error:", error);
+    setMembers((data ?? []) as Member[]);
   }
 
-  // Load room + members + deck
+  // Initial load
   useEffect(() => {
     (async () => {
       setLoading(true);
 
-      const { data: r } = await supabase
+      const { data: r, error: rErr } = await supabase
         .from("rooms")
         .select("*")
         .eq("code", code)
         .single();
 
-      if (!r) {
+      if (rErr || !r) {
+        console.error("rooms load error:", rErr);
         setRoom(null);
         setMembers([]);
         setDeckName("");
@@ -72,29 +61,33 @@ export default function PlayPage({ params }: { params: { code: string } }) {
     })();
   }, [code]);
 
-  // Realtime: refresh members on INSERT/UPDATE/DELETE in this room
+  // Realtime subscription + fallback polling
   useEffect(() => {
     if (!room?.id) return;
 
-    const channel = supabase
-      .channel(`room-members:${room.id}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*", // INSERT | UPDATE | DELETE
-          schema: "public",
-          table: "room_members",
-          filter: `room_id=eq.${room.id}`,
-        },
-        () => {
-          // pull fresh list when anything changes
-          loadMembers(room.id);
-        }
-      )
-      .subscribe();
+    console.log("[realtime] subscribing for room_id:", room.id);
+
+    const channel = supabase.channel(`room-members:${room.id}`);
+
+    const onChange = (payload: unknown) => {
+      console.log("[realtime] room_members change:", payload);
+      loadMembers(room.id);
+    };
+
+    channel
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` }, onChange)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` }, onChange)
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` }, onChange)
+      .subscribe((status) => {
+        console.log("[realtime] subscribe status:", status);
+      });
+
+    // Fallback polling every 5s (cheap & safe for small rooms)
+    const poll = setInterval(() => loadMembers(room.id), 5000);
 
     return () => {
       supabase.removeChannel(channel);
+      clearInterval(poll);
     };
   }, [room?.id]);
 

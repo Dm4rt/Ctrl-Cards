@@ -3,8 +3,6 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-type Profile = { id: string; username: string | null };
-
 export default function NavBar() {
   const [userId, setUserId] = useState<string | null>(null);
   const [username, setUsername] = useState<string>("");
@@ -27,7 +25,7 @@ export default function NavBar() {
 
   async function signOut() {
     await supabase.auth.signOut();
-    location.href = "/"; // go home
+    location.href = "/";
   }
 
   return (
@@ -56,4 +54,3 @@ export default function NavBar() {
     </header>
   );
 }
-

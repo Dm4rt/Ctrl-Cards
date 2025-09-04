@@ -2,6 +2,19 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
+function getErrMsg(e: unknown) {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  try { return JSON.stringify(e); } catch { return "Unknown error"; }
+}
+function getPgCode(e: unknown): string | undefined {
+  if (typeof e === "object" && e && "code" in e) {
+    const val = (e as { code?: unknown }).code;
+    return typeof val === "string" ? val : undefined;
+  }
+  return undefined;
+}
+
 export default function ProfilePage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
@@ -29,14 +42,17 @@ export default function ProfilePage() {
       const { error } = await supabase
         .from("profiles")
         .upsert({ id: userId, username });
-      if (error && (error as any).code === "23505") {
-        alert("That username is taken. Try another.");
-        return;
+      if (error) {
+        if (getPgCode(error) === "23505") {
+          alert("That username is taken. Try another.");
+          setSaving(false);
+          return;
+        }
+        throw error;
       }
-      if (error) throw error;
       alert("Saved!");
-    } catch (e: any) {
-      alert(e.message ?? String(e));
+    } catch (e: unknown) {
+      alert(getErrMsg(e));
     } finally {
       setSaving(false);
     }

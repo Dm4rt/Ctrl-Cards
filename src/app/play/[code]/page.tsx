@@ -35,6 +35,7 @@ type Play = {
 };
 
 type Card = { id: string; text: string };
+type ProfileRow = { id: string; username: string | null };
 
 export default function PlayPage({ params }: { params: { code: string } }) {
   const code = params.code.toUpperCase();
@@ -52,7 +53,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
   const [plays, setPlays] = useState<Play[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
 
-  // NEW: username map
+  // usernames by id for the lobby list
   const [nameById, setNameById] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -69,14 +70,16 @@ export default function PlayPage({ params }: { params: { code: string } }) {
     const list = (data ?? []) as Member[];
     setMembers(list);
 
+    // fetch usernames for these user_ids
     const ids = Array.from(new Set(list.map((m) => m.user_id)));
     if (ids.length) {
-      const { data: profs } = await supabase
+      const { data: profs, error: pErr } = await supabase
         .from("profiles")
         .select("id,username")
         .in("id", ids);
+      if (pErr) console.error("[profiles] load error:", pErr);
       const map: Record<string, string> = {};
-      (profs ?? []).forEach((p: any) => {
+      ((profs ?? []) as ProfileRow[]).forEach((p) => {
         if (p.username) map[p.id] = p.username;
       });
       setNameById(map);
@@ -143,7 +146,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         return;
       }
 
-      console.log("[rooms] loaded:", r);
       setRoom(r as Room);
       await loadMembers(r.id);
 
@@ -231,12 +233,14 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "rounds", filter: `room_id=eq.${room.id}` },
-        (payload) => setRound(payload.new as Round)
+        (payload) => {
+          setRound(payload.new as Round);
+        }
       )
       .subscribe();
 
     const pollRounds = setInterval(() => {
-      if (room?.id) loadLatestRound(room.id).then((rr) => {
+      loadLatestRound(room.id).then((rr) => {
         if (rr) loadPromptText(rr.prompt_card_id);
       });
     }, 5000);
@@ -296,6 +300,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       alert("Could not start round: " + iErr.message);
       return;
     }
+    // INSERT will trigger realtime → the UI will update
   }
 
   // Player submits one play
@@ -307,17 +312,18 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .select()
       .single();
     if (error) {
-      if ((error.message || "").includes("plays_one_per_round")) {
+      const msg = error.message ?? "Unknown error";
+      if (msg.includes("plays_one_per_round")) {
         alert("You already submitted this round.");
       } else {
-        alert("Submit failed: " + error.message);
+        alert("Submit failed: " + msg);
       }
       return;
     }
     setMyPlayId(data.id as string);
   }
 
-  // Host picks winner
+  // Host picks winner → mark round complete + +1 score
   async function pickWinner(playId: string) {
     if (!round || !room) return;
 
@@ -399,6 +405,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
           </div>
         )}
 
+        {/* Player hand */}
         {round && round.state === "submitting" && (
           <>
             <h4 className="font-semibold">Your hand</h4>
@@ -416,6 +423,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
           </>
         )}
 
+        {/* Host view to pick a winner */}
         {amHost && round && round.state === "submitting" && (
           <div className="mt-4 p-4 border rounded">
             <h4 className="font-semibold">Plays</h4>
@@ -434,6 +442,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
           </div>
         )}
 
+        {/* Show winner when complete */}
         {round && round.state === "complete" && (
           <div className="p-4 border rounded">
             <h4 className="font-semibold">Round complete</h4>

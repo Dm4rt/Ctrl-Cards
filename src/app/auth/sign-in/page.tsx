@@ -3,47 +3,39 @@ import { useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 
-export default function SignUpPage() {
+function getErrMsg(e: unknown) {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  try { return JSON.stringify(e); } catch { return "Unknown error"; }
+}
+
+export default function SignInPage() {
   const r = useRouter();
   const [email, setEmail] = useState("");
-  const [username, setUsername] = useState("");
   const [pw, setPw] = useState("");
-  const [pw2, setPw2] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!email || !username || !pw) return alert("Fill all fields.");
-    if (pw !== pw2) return alert("Passwords do not match.");
-
     try {
       setLoading(true);
-      // 1) create auth user
-      const { data: sign, error: signErr } = await supabase.auth.signUp({
-        email,
-        password: pw,
-        options: { emailRedirectTo: `${window.location.origin}/` },
-      });
-      if (signErr) throw signErr;
+      const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
+      if (error) throw error;
 
-      // If confirm email OFF, we have a session; create profile row
-      const uid = sign.user?.id;
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u.user?.id;
       if (uid) {
-        const { error: profErr } = await supabase
-          .from("profiles")
-          .insert({ id: uid, username });
-        if (profErr && (profErr as any).code === "23505") {
-          throw new Error("Username is taken. Pick another.");
+        const { data: p } = await supabase
+          .from("profiles").select("username")
+          .eq("id", uid).maybeSingle();
+        if (!p?.username) {
+          r.push("/profile");
+          return;
         }
-        if (profErr) throw profErr;
-        r.push("/room");
-      } else {
-        // If confirm email ON
-        alert("Check your email to confirm, then sign in.");
-        r.push("/auth/sign-in");
       }
-    } catch (err: any) {
-      alert(err.message ?? String(err));
+      r.push("/room");
+    } catch (err: unknown) {
+      alert(getErrMsg(err));
     } finally {
       setLoading(false);
     }
@@ -51,18 +43,14 @@ export default function SignUpPage() {
 
   return (
     <main className="max-w-md mx-auto p-6 space-y-4">
-      <h1 className="text-2xl font-bold">Create account</h1>
+      <h1 className="text-2xl font-bold">Sign in</h1>
       <form onSubmit={onSubmit} className="space-y-3">
         <input className="border rounded px-3 py-2 w-full" placeholder="Email"
                value={email} onChange={(e)=>setEmail(e.target.value)} />
-        <input className="border rounded px-3 py-2 w-full" placeholder="Username"
-               value={username} onChange={(e)=>setUsername(e.target.value)} />
         <input className="border rounded px-3 py-2 w-full" type="password" placeholder="Password"
                value={pw} onChange={(e)=>setPw(e.target.value)} />
-        <input className="border rounded px-3 py-2 w-full" type="password" placeholder="Confirm password"
-               value={pw2} onChange={(e)=>setPw2(e.target.value)} />
         <button disabled={loading} className="px-4 py-2 rounded bg-black text-white">
-          {loading ? "Creating…" : "Create account"}
+          {loading ? "Signing in…" : "Sign in"}
         </button>
       </form>
     </main>

@@ -26,19 +26,27 @@ export default function PlayPage({ params }: { params: { code: string } }) {
   const [deckName, setDeckName] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
-  // Load room, members, and deck name
+  // helper to load members for current room
+  async function loadMembers(roomId: string) {
+    const { data: m } = await supabase
+      .from("room_members")
+      .select("id,user_id,role,score")
+      .eq("room_id", roomId);
+    setMembers((m ?? []) as Member[]);
+  }
+
+  // Load room + members + deck
   useEffect(() => {
     (async () => {
       setLoading(true);
 
-      // 1) Room by code
-      const { data: r, error: rErr } = await supabase
+      const { data: r } = await supabase
         .from("rooms")
         .select("*")
         .eq("code", code)
         .single();
 
-      if (rErr || !r) {
+      if (!r) {
         setRoom(null);
         setMembers([]);
         setDeckName("");
@@ -47,16 +55,8 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       }
 
       setRoom(r as Room);
+      await loadMembers(r.id);
 
-      // 2) Members in that room
-      const { data: m } = await supabase
-        .from("room_members")
-        .select("id,user_id,role,score")
-        .eq("room_id", r.id);
-
-      setMembers((m ?? []) as Member[]);
-
-      // 3) Deck name (if any)
       if (r.deck_id) {
         const { data: d } = await supabase
           .from("decks")
@@ -71,6 +71,32 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       setLoading(false);
     })();
   }, [code]);
+
+  // Realtime: refresh members on INSERT/UPDATE/DELETE in this room
+  useEffect(() => {
+    if (!room?.id) return;
+
+    const channel = supabase
+      .channel(`room-members:${room.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*", // INSERT | UPDATE | DELETE
+          schema: "public",
+          table: "room_members",
+          filter: `room_id=eq.${room.id}`,
+        },
+        () => {
+          // pull fresh list when anything changes
+          loadMembers(room.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [room?.id]);
 
   if (loading) return <div className="p-6">Loading room…</div>;
   if (!room) return <div className="p-6">Room not found.</div>;

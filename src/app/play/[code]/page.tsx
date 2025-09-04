@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Room = {
@@ -32,6 +32,11 @@ type Play = {
   player_user_id: string;
   text: string | null;
   image_url: string | null;
+};
+
+type Card = {
+  id: string;
+  text: string;
 };
 
 export default function PlayPage({ params }: { params: { code: string } }) {
@@ -86,7 +91,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .select("text")
       .eq("id", cardId)
       .single();
-    setPromptText(data?.text ?? null);
+    setPromptText((data?.text as string | undefined) ?? null);
   }
 
   async function loadPlays(roundId: string) {
@@ -126,7 +131,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
           .select("name")
           .eq("id", r.deck_id)
           .single();
-        setDeckName(d?.name ?? "");
+        setDeckName((d?.name as string) ?? "");
       } else {
         setDeckName("");
       }
@@ -146,13 +151,16 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       if (!room?.deck_id) return;
       const { data: responses } = await supabase
         .from("cards")
-        .select("text")
+        .select("id,text")
         .eq("deck_id", room.deck_id)
         .eq("type", "response")
         .limit(50);
-      if (!responses?.length) return;
-      const shuffled = [...responses].sort(() => Math.random() - 0.5).slice(0, 3);
-      setHand(shuffled.map((r: any) => r.text!));
+
+      if (!responses || responses.length === 0) return;
+
+      const cards = responses as Card[];
+      const shuffled = [...cards].sort(() => Math.random() - 0.5).slice(0, 3);
+      setHand(shuffled.map((c) => c.text));
     })();
   }, [room?.deck_id]);
 
@@ -197,7 +205,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "rounds", filter: `room_id=eq.${room.id}` },
-        async (payload) => {
+        (payload) => {
           const rr = payload.new as Round;
           setRound(rr);
         }
@@ -212,10 +220,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         { event: "INSERT", schema: "public", table: "plays" },
         (payload) => {
           const p = payload.new as Play;
-          // Only for our current round
-          if (p.round_id === round?.id) {
-            setPlays((prev) => [...prev, p]);
-          }
+          if (p.round_id === round?.id) setPlays((prev) => [...prev, p]);
         }
       )
       .subscribe();
@@ -230,21 +235,21 @@ export default function PlayPage({ params }: { params: { code: string } }) {
   // Host starts a round (random prompt from deck)
   async function startRound() {
     if (!room) return;
-    // pick a random prompt
     const { data: prompts } = await supabase
       .from("cards")
       .select("id,text")
       .eq("deck_id", room.deck_id)
       .eq("type", "prompt");
-    if (!prompts?.length) return alert("No prompts in this deck.");
+    if (!prompts || prompts.length === 0) return alert("No prompts in this deck.");
 
-    const prompt = prompts[Math.floor(Math.random() * prompts.length)];
+    const idx = Math.floor(Math.random() * prompts.length);
+    const prompt = prompts[idx] as Card;
     const { error } = await supabase
       .from("rounds")
       .insert({ room_id: room.id, prompt_card_id: prompt.id })
       .single();
     if (error) return alert(error.message);
-    // INSERT will trigger realtime → UI updates
+    // INSERT triggers realtime → UI updates
   }
 
   // Player submits one play
@@ -261,7 +266,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       }
       return alert(error.message);
     }
-    setMyPlayId(data.id);
+    setMyPlayId(data.id as string);
   }
 
   // Host picks winner → mark round complete + +1 score
@@ -296,7 +301,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
     if (e3) return alert(e3.message);
   }
 
-  const amHost = useMemo(() => userId && room?.host_id === userId, [userId, room?.host_id]);
+  const amHost = useMemo(() => !!userId && room?.host_id === userId, [userId, room?.host_id]);
 
   if (loading) return <div className="p-6">Loading room…</div>;
   if (!room) return <div className="p-6">Room not found.</div>;

@@ -52,6 +52,9 @@ export default function PlayPage({ params }: { params: { code: string } }) {
   const [plays, setPlays] = useState<Play[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
 
+  // NEW: username map
+  const [nameById, setNameById] = useState<Record<string, string>>({});
+
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null));
   }, []);
@@ -62,7 +65,24 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .select("id,user_id,role,score")
       .eq("room_id", roomId);
     if (error) console.error("[members] load error:", error);
-    setMembers((data ?? []) as Member[]);
+
+    const list = (data ?? []) as Member[];
+    setMembers(list);
+
+    const ids = Array.from(new Set(list.map((m) => m.user_id)));
+    if (ids.length) {
+      const { data: profs } = await supabase
+        .from("profiles")
+        .select("id,username")
+        .in("id", ids);
+      const map: Record<string, string> = {};
+      (profs ?? []).forEach((p: any) => {
+        if (p.username) map[p.id] = p.username;
+      });
+      setNameById(map);
+    } else {
+      setNameById({});
+    }
   }
 
   async function loadLatestRound(roomId: string) {
@@ -178,28 +198,19 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
-        (payload) => {
-          console.log("[realtime] members INSERT:", payload);
-          loadMembers(room.id);
-        }
+        () => loadMembers(room.id)
       )
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
-        (payload) => {
-          console.log("[realtime] members UPDATE:", payload);
-          loadMembers(room.id);
-        }
+        () => loadMembers(room.id)
       )
       .on(
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
-        (payload) => {
-          console.log("[realtime] members DELETE:", payload);
-          loadMembers(room.id);
-        }
+        () => loadMembers(room.id)
       )
-      .subscribe((status) => console.log("[realtime] members status:", status));
+      .subscribe();
 
     const pollMembers = setInterval(() => loadMembers(room.id), 5000);
 
@@ -210,7 +221,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "rounds", filter: `room_id=eq.${room.id}` },
         async (payload) => {
-          console.log("[realtime] rounds INSERT:", payload);
           const rr = payload.new as Round;
           setRound(rr);
           await loadPromptText(rr.prompt_card_id);
@@ -221,12 +231,9 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "rounds", filter: `room_id=eq.${room.id}` },
-        (payload) => {
-          console.log("[realtime] rounds UPDATE:", payload);
-          setRound(payload.new as Round);
-        }
+        (payload) => setRound(payload.new as Round)
       )
-      .subscribe((status) => console.log("[realtime] rounds status:", status));
+      .subscribe();
 
     const pollRounds = setInterval(() => {
       if (room?.id) loadLatestRound(room.id).then((rr) => {
@@ -242,11 +249,10 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         { event: "INSERT", schema: "public", table: "plays" },
         (payload) => {
           const p = payload.new as Play;
-          console.log("[realtime] plays INSERT:", payload);
           if (p.round_id === round?.id) setPlays((prev) => [...prev, p]);
         }
       )
-      .subscribe((status) => console.log("[realtime] plays status:", status));
+      .subscribe();
 
     const pollPlays = setInterval(() => {
       if (round?.id) loadPlays(round.id);
@@ -265,7 +271,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
   // Host starts a round (random prompt from deck)
   async function startRound() {
     if (!room) return;
-    console.log("[action] startRound");
     const { data: prompts, error: sErr } = await supabase
       .from("cards")
       .select("id,text")
@@ -273,7 +278,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .eq("type", "prompt");
 
     if (sErr) {
-      console.error("[cards] select prompts error:", sErr);
       alert("Could not load prompts: " + sErr.message);
       return;
     }
@@ -289,24 +293,20 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .insert({ room_id: room.id, prompt_card_id: prompt.id })
       .single();
     if (iErr) {
-      console.error("[rounds] insert error:", iErr);
       alert("Could not start round: " + iErr.message);
       return;
     }
-    // INSERT will trigger realtime → the UI will update
   }
 
   // Player submits one play
   async function submitPlay(text: string) {
     if (!round || !userId) return;
-    console.log("[action] submitPlay");
     const { data, error } = await supabase
       .from("plays")
       .insert({ round_id: round.id, player_user_id: userId, text })
       .select()
       .single();
     if (error) {
-      console.error("[plays] insert error:", error);
       if ((error.message || "").includes("plays_one_per_round")) {
         alert("You already submitted this round.");
       } else {
@@ -317,17 +317,15 @@ export default function PlayPage({ params }: { params: { code: string } }) {
     setMyPlayId(data.id as string);
   }
 
-  // Host picks winner → mark round complete + +1 score
+  // Host picks winner
   async function pickWinner(playId: string) {
     if (!round || !room) return;
-    console.log("[action] pickWinner", playId);
 
     const { error: e1 } = await supabase
       .from("rounds")
       .update({ state: "complete", winning_play_id: playId })
       .eq("id", round.id);
     if (e1) {
-      console.error("[rounds] update error:", e1);
       alert("Could not complete round: " + e1.message);
       return;
     }
@@ -342,7 +340,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .eq("user_id", winner.player_user_id)
       .single();
     if (sErr) {
-      console.error("[room_members] score read error:", sErr);
       alert("Could not read score: " + sErr.message);
       return;
     }
@@ -354,7 +351,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .eq("room_id", room.id)
       .eq("user_id", winner.player_user_id);
     if (uErr) {
-      console.error("[room_members] score update error:", uErr);
       alert("Could not update score: " + uErr.message);
       return;
     }
@@ -369,7 +365,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
     <main className="max-w-xl mx-auto p-6 space-y-5">
       <div>
         <h1 className="text-2xl font-bold">Room {room.code}</h1>
-      <p className="opacity-80">Status: {room.status}</p>
+        <p className="opacity-80">Status: {room.status}</p>
         {deckName && <p className="opacity-80 text-sm">Deck: {deckName}</p>}
       </div>
 
@@ -378,7 +374,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         <ul className="list-disc pl-6">
           {members.map((m) => (
             <li key={m.id}>
-              {m.user_id.slice(0, 8)}… — {m.role} — {m.score} pts
+              {(nameById[m.user_id] ?? `${m.user_id.slice(0, 8)}…`)} — {m.role} — {m.score} pts
             </li>
           ))}
         </ul>
@@ -441,9 +437,11 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         {round && round.state === "complete" && (
           <div className="p-4 border rounded">
             <h4 className="font-semibold">Round complete</h4>
-            {round.winning_play_id
-              ? <p>Winner chosen! Start next round when ready.</p>
-              : <p>Winner not set.</p>}
+            {round.winning_play_id ? (
+              <p>Winner chosen! Start next round when ready.</p>
+            ) : (
+              <p>Winner not set.</p>
+            )}
           </div>
         )}
       </section>

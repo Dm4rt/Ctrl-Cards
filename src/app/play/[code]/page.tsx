@@ -34,10 +34,7 @@ type Play = {
   image_url: string | null;
 };
 
-type Card = {
-  id: string;
-  text: string;
-};
+type Card = { id: string; text: string };
 
 export default function PlayPage({ params }: { params: { code: string } }) {
   const code = params.code.toUpperCase();
@@ -64,12 +61,12 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .from("room_members")
       .select("id,user_id,role,score")
       .eq("room_id", roomId);
-    if (error) console.error("loadMembers error:", error);
+    if (error) console.error("[members] load error:", error);
     setMembers((data ?? []) as Member[]);
   }
 
   async function loadLatestRound(roomId: string) {
-    const { data: rr } = await supabase
+    const { data, error } = await supabase
       .from("rounds")
       .select("*")
       .eq("room_id", roomId)
@@ -77,8 +74,10 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       .limit(1)
       .maybeSingle();
 
-    setRound((rr as Round) ?? null);
-    return (rr as Round) ?? null;
+    if (error) console.error("[rounds] load error:", error);
+    const rr = (data as Round) ?? null;
+    setRound(rr);
+    return rr;
   }
 
   async function loadPromptText(cardId: string | null) {
@@ -86,23 +85,25 @@ export default function PlayPage({ params }: { params: { code: string } }) {
       setPromptText(null);
       return;
     }
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("cards")
       .select("text")
       .eq("id", cardId)
       .single();
+    if (error) console.error("[cards] prompt load error:", error);
     setPromptText((data?.text as string | undefined) ?? null);
   }
 
   async function loadPlays(roundId: string) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("plays")
       .select("id,round_id,player_user_id,text,image_url")
       .eq("round_id", roundId);
+    if (error) console.error("[plays] load error:", error);
     setPlays((data ?? []) as Play[]);
   }
 
-  // Initial load of room + members + deck
+  // Initial page load
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -114,7 +115,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         .single();
 
       if (rErr || !r) {
-        console.error("rooms load error:", rErr);
+        console.error("[rooms] load error:", rErr);
         setRoom(null);
         setMembers([]);
         setDeckName("");
@@ -122,21 +123,22 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         return;
       }
 
+      console.log("[rooms] loaded:", r);
       setRoom(r as Room);
       await loadMembers(r.id);
 
       if (r.deck_id) {
-        const { data: d } = await supabase
+        const { data: d, error: dErr } = await supabase
           .from("decks")
           .select("name")
           .eq("id", r.deck_id)
           .single();
+        if (dErr) console.error("[decks] name load error:", dErr);
         setDeckName((d?.name as string) ?? "");
       } else {
         setDeckName("");
       }
 
-      // Load latest round (if any)
       const last = await loadLatestRound(r.id);
       await loadPromptText(last?.prompt_card_id ?? null);
       if (last?.id) await loadPlays(last.id);
@@ -145,56 +147,70 @@ export default function PlayPage({ params }: { params: { code: string } }) {
     })();
   }, [code]);
 
-  // Deal a simple hand (3 random response cards) whenever room changes
+  // Deal a simple hand whenever room/round changes
   useEffect(() => {
     (async () => {
       if (!room?.deck_id) return;
-      const { data: responses } = await supabase
+      const { data, error } = await supabase
         .from("cards")
         .select("id,text")
         .eq("deck_id", room.deck_id)
         .eq("type", "response")
         .limit(50);
-
-      if (!responses || responses.length === 0) return;
-
-      const cards = responses as Card[];
-      const shuffled = [...cards].sort(() => Math.random() - 0.5).slice(0, 3);
+      if (error) {
+        console.error("[cards] hand load error:", error);
+        return;
+      }
+      const responses = (data ?? []) as Card[];
+      if (responses.length === 0) return;
+      const shuffled = [...responses].sort(() => Math.random() - 0.5).slice(0, 3);
       setHand(shuffled.map((c) => c.text));
     })();
-  }, [room?.deck_id]);
+  }, [room?.deck_id, round?.id]);
 
-  // Realtime subscriptions
+  // Realtime + polling fallbacks
   useEffect(() => {
     if (!room?.id) return;
 
-    // Members live updates
+    // MEMBERS
     const chMembers = supabase
       .channel(`room-members:${room.id}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
-        () => loadMembers(room.id)
+        (payload) => {
+          console.log("[realtime] members INSERT:", payload);
+          loadMembers(room.id);
+        }
       )
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
-        () => loadMembers(room.id)
+        (payload) => {
+          console.log("[realtime] members UPDATE:", payload);
+          loadMembers(room.id);
+        }
       )
       .on(
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
-        () => loadMembers(room.id)
+        (payload) => {
+          console.log("[realtime] members DELETE:", payload);
+          loadMembers(room.id);
+        }
       )
-      .subscribe();
+      .subscribe((status) => console.log("[realtime] members status:", status));
 
-    // Rounds: new round or state change
+    const pollMembers = setInterval(() => loadMembers(room.id), 5000);
+
+    // ROUNDS
     const chRounds = supabase
       .channel(`rounds:${room.id}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "rounds", filter: `room_id=eq.${room.id}` },
         async (payload) => {
+          console.log("[realtime] rounds INSERT:", payload);
           const rr = payload.new as Round;
           setRound(rr);
           await loadPromptText(rr.prompt_card_id);
@@ -206,13 +222,19 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "rounds", filter: `room_id=eq.${room.id}` },
         (payload) => {
-          const rr = payload.new as Round;
-          setRound(rr);
+          console.log("[realtime] rounds UPDATE:", payload);
+          setRound(payload.new as Round);
         }
       )
-      .subscribe();
+      .subscribe((status) => console.log("[realtime] rounds status:", status));
 
-    // Plays: list as they arrive
+    const pollRounds = setInterval(() => {
+      if (room?.id) loadLatestRound(room.id).then((rr) => {
+        if (rr) loadPromptText(rr.prompt_card_id);
+      });
+    }, 5000);
+
+    // PLAYS
     const chPlays = supabase
       .channel(`plays:${room.id}`)
       .on(
@@ -220,51 +242,77 @@ export default function PlayPage({ params }: { params: { code: string } }) {
         { event: "INSERT", schema: "public", table: "plays" },
         (payload) => {
           const p = payload.new as Play;
+          console.log("[realtime] plays INSERT:", payload);
           if (p.round_id === round?.id) setPlays((prev) => [...prev, p]);
         }
       )
-      .subscribe();
+      .subscribe((status) => console.log("[realtime] plays status:", status));
+
+    const pollPlays = setInterval(() => {
+      if (round?.id) loadPlays(round.id);
+    }, 5000);
 
     return () => {
       supabase.removeChannel(chMembers);
       supabase.removeChannel(chRounds);
       supabase.removeChannel(chPlays);
+      clearInterval(pollMembers);
+      clearInterval(pollRounds);
+      clearInterval(pollPlays);
     };
   }, [room?.id, round?.id]);
 
   // Host starts a round (random prompt from deck)
   async function startRound() {
     if (!room) return;
-    const { data: prompts } = await supabase
+    console.log("[action] startRound");
+    const { data: prompts, error: sErr } = await supabase
       .from("cards")
       .select("id,text")
       .eq("deck_id", room.deck_id)
       .eq("type", "prompt");
-    if (!prompts || prompts.length === 0) return alert("No prompts in this deck.");
 
-    const idx = Math.floor(Math.random() * prompts.length);
-    const prompt = prompts[idx] as Card;
-    const { error } = await supabase
+    if (sErr) {
+      console.error("[cards] select prompts error:", sErr);
+      alert("Could not load prompts: " + sErr.message);
+      return;
+    }
+    const list = (prompts ?? []) as Card[];
+    if (list.length === 0) {
+      alert("No prompts in this deck.");
+      return;
+    }
+
+    const prompt = list[Math.floor(Math.random() * list.length)];
+    const { error: iErr } = await supabase
       .from("rounds")
       .insert({ room_id: room.id, prompt_card_id: prompt.id })
       .single();
-    if (error) return alert(error.message);
-    // INSERT triggers realtime → UI updates
+    if (iErr) {
+      console.error("[rounds] insert error:", iErr);
+      alert("Could not start round: " + iErr.message);
+      return;
+    }
+    // INSERT will trigger realtime → the UI will update
   }
 
   // Player submits one play
   async function submitPlay(text: string) {
     if (!round || !userId) return;
+    console.log("[action] submitPlay");
     const { data, error } = await supabase
       .from("plays")
       .insert({ round_id: round.id, player_user_id: userId, text })
       .select()
       .single();
     if (error) {
-      if (error.message.includes("plays_one_per_round")) {
-        return alert("You already submitted this round.");
+      console.error("[plays] insert error:", error);
+      if ((error.message || "").includes("plays_one_per_round")) {
+        alert("You already submitted this round.");
+      } else {
+        alert("Submit failed: " + error.message);
       }
-      return alert(error.message);
+      return;
     }
     setMyPlayId(data.id as string);
   }
@@ -272,33 +320,44 @@ export default function PlayPage({ params }: { params: { code: string } }) {
   // Host picks winner → mark round complete + +1 score
   async function pickWinner(playId: string) {
     if (!round || !room) return;
+    console.log("[action] pickWinner", playId);
 
-    // 1) mark round complete
     const { error: e1 } = await supabase
       .from("rounds")
       .update({ state: "complete", winning_play_id: playId })
       .eq("id", round.id);
-    if (e1) return alert(e1.message);
+    if (e1) {
+      console.error("[rounds] update error:", e1);
+      alert("Could not complete round: " + e1.message);
+      return;
+    }
 
-    // 2) find winner user id
     const winner = plays.find((p) => p.id === playId);
     if (!winner) return alert("Winner not found.");
 
-    // 3) read current score then set +1
-    const { data: cur } = await supabase
+    const { data: cur, error: sErr } = await supabase
       .from("room_members")
       .select("score")
       .eq("room_id", room.id)
       .eq("user_id", winner.player_user_id)
       .single();
-    const newScore = (cur?.score ?? 0) + 1;
+    if (sErr) {
+      console.error("[room_members] score read error:", sErr);
+      alert("Could not read score: " + sErr.message);
+      return;
+    }
 
-    const { error: e3 } = await supabase
+    const newScore = (cur?.score ?? 0) + 1;
+    const { error: uErr } = await supabase
       .from("room_members")
       .update({ score: newScore })
       .eq("room_id", room.id)
       .eq("user_id", winner.player_user_id);
-    if (e3) return alert(e3.message);
+    if (uErr) {
+      console.error("[room_members] score update error:", uErr);
+      alert("Could not update score: " + uErr.message);
+      return;
+    }
   }
 
   const amHost = useMemo(() => !!userId && room?.host_id === userId, [userId, room?.host_id]);
@@ -310,7 +369,7 @@ export default function PlayPage({ params }: { params: { code: string } }) {
     <main className="max-w-xl mx-auto p-6 space-y-5">
       <div>
         <h1 className="text-2xl font-bold">Room {room.code}</h1>
-        <p className="opacity-80">Status: {room.status}</p>
+      <p className="opacity-80">Status: {room.status}</p>
         {deckName && <p className="opacity-80 text-sm">Deck: {deckName}</p>}
       </div>
 
@@ -344,7 +403,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
           </div>
         )}
 
-        {/* Player hand */}
         {round && round.state === "submitting" && (
           <>
             <h4 className="font-semibold">Your hand</h4>
@@ -362,7 +420,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
           </>
         )}
 
-        {/* Host view to pick a winner */}
         {amHost && round && round.state === "submitting" && (
           <div className="mt-4 p-4 border rounded">
             <h4 className="font-semibold">Plays</h4>
@@ -381,7 +438,6 @@ export default function PlayPage({ params }: { params: { code: string } }) {
           </div>
         )}
 
-        {/* Show winner when complete */}
         {round && round.state === "complete" && (
           <div className="p-4 border rounded">
             <h4 className="font-semibold">Round complete</h4>

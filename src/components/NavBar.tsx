@@ -3,29 +3,46 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
+type ProfileRow = { id: string; username: string | null };
+
 export default function NavBar() {
   const [userId, setUserId] = useState<string | null>(null);
   const [username, setUsername] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+
+  async function loadMe() {
+    const { data } = await supabase.auth.getUser();
+    const uid = data.user?.id ?? null;
+    setUserId(uid);
+    if (uid) {
+      const { data: p } = await supabase
+        .from("profiles")
+        .select("id,username")
+        .eq("id", uid)
+        .maybeSingle();
+      setUsername(p?.username ?? "");
+    } else {
+      setUsername("");
+    }
+    setLoading(false);
+  }
 
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getUser();
-      const uid = data.user?.id ?? null;
-      setUserId(uid);
-      if (uid) {
-        const { data: p } = await supabase
-          .from("profiles")
-          .select("id,username")
-          .eq("id", uid)
-          .maybeSingle();
-        setUsername(p?.username ?? "");
-      }
-    })();
+    // initial load
+    loadMe();
+    // react to sign-in/sign-out
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      loadMe();
+    });
+    return () => {
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   async function signOut() {
     await supabase.auth.signOut();
-    location.href = "/";
+    // take them home; navbar will update via onAuthStateChange
+    window.location.href = "/";
   }
 
   return (
@@ -34,7 +51,8 @@ export default function NavBar() {
         <Link href="/" className="font-semibold">CAH-ish</Link>
         <div className="flex items-center gap-4">
           <Link href="/room" className="underline">Rooms</Link>
-          {!userId ? (
+
+          {loading ? null : !userId ? (
             <>
               <Link href="/auth/sign-in" className="underline">Sign in</Link>
               <Link href="/auth/sign-up" className="underline">Sign up</Link>
@@ -44,7 +62,10 @@ export default function NavBar() {
               <Link href="/profile" className="underline">
                 {username ? `@${username}` : "Profile"}
               </Link>
-              <button onClick={signOut} className="text-sm px-3 py-1 rounded bg-black text-white">
+              <button
+                onClick={signOut}
+                className="text-sm px-3 py-1 rounded bg-black text-white"
+              >
                 Sign out
               </button>
             </>
